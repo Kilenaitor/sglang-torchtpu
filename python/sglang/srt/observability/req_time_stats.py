@@ -638,6 +638,7 @@ class SchedulerReqTimeStats(ReqTimeStatsBase):
     decode_prealloc_queue_entry_time: float = 0.0
     decode_transfer_queue_entry_time: float = 0.0
     decode_prebuilt_finish_time: float = 0.0
+    last_decode_prebuilt_finish_time: float = 0.0
 
     # bootstrap sub-phase tracking (PD disagg)
     bootstrap_done_time: float = 0.0
@@ -676,6 +677,8 @@ class SchedulerReqTimeStats(ReqTimeStatsBase):
             "wait_queue_entry_time": self.wait_queue_entry_time,
             "forward_entry_time": self.forward_entry_time,
             "prefill_finished_time": self.prefill_finished_time,
+            # PD decode's first-token time: its first local prebuilt completion.
+            "decode_prebuilt_finish_time": self.decode_prebuilt_finish_time,
             # Read by meta_info["queue_time"] on the tokenizer; timestamps cannot rebuild it.
             "queue_duration_s": self.queue_duration_s,
             "diff_realtime_monotonic": global_diff_realtime_monotonic,
@@ -862,7 +865,7 @@ class SchedulerReqTimeStats(ReqTimeStatsBase):
         if self.enable_metrics or self.trace_ctx.tracing_enable:
             if last_time == 0.0:
                 if self.disagg_mode == DisaggregationMode.DECODE:
-                    last_time = self.decode_prebuilt_finish_time
+                    last_time = self.last_decode_prebuilt_finish_time
                 else:
                     if (
                         self.last_decode_scheduled_time
@@ -1047,7 +1050,11 @@ class SchedulerReqTimeStats(ReqTimeStatsBase):
 
     def set_decode_prebuilt_finish_time(self, ts=None):
         ts = ts or time.perf_counter()
-        self.decode_prebuilt_finish_time = ts
+        # A retraction rebootstrap re-runs this method. Don't overwrite the stamp so
+        # timing stays relative to the first token rather than the rebootstrap.
+        if self.decode_prebuilt_finish_time == 0.0:
+            self.decode_prebuilt_finish_time = ts
+        self.last_decode_prebuilt_finish_time = ts
 
         stage = RequestStage.DECODE_FAKE_OUTPUT
         self.observe_per_stage_req_latency(stage, ts - self.last_forward_entry_time)

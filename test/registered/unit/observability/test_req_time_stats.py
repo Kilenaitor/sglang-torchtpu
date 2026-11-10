@@ -33,6 +33,8 @@ class TestSetstatePreservesUnsetTimeSentinels(CustomTestCase):
         src.enable_metrics = True
         src.wait_queue_entry_time = 123.456
         src.prefill_finished_time = 0.0
+        # A PD decode server's first-token time; the tokenizer needs it to time decode.
+        src.decode_prebuilt_finish_time = 200.0
 
         with mock.patch.object(rts, "global_diff_realtime_monotonic", 1_000_000.0):
             blob = pickle.dumps(src)
@@ -44,6 +46,7 @@ class TestSetstatePreservesUnsetTimeSentinels(CustomTestCase):
 
         self.assertEqual(hop2.prefill_finished_time, 0.0)
         self.assertAlmostEqual(hop2.wait_queue_entry_time, 123.456 - 9.0)
+        self.assertAlmostEqual(hop2.decode_prebuilt_finish_time, 200.0 - 9.0)
 
 
 class TestOutputMetaInfo(CustomTestCase):
@@ -254,6 +257,24 @@ class TestQueueTimeAcrossRetraction(CustomTestCase):
         stats.set_quick_finish_time(self.T0 + 1.30)
 
         self.assertAlmostEqual(stats.get_queueing_time(), 0.35)
+
+    def test_decode_rebootstrap_keeps_first_token_time(self):
+        """A rebootstrapped decode request re-runs the prebuilt step; the first
+        token's time must not move to the resume, but the decode-loop base must."""
+        stats = self._stats(disagg_mode=rts.DisaggregationMode.DECODE)
+        stats.set_decode_prebuilt_finish_time(self.T0 + 0.10)
+        stats.set_retract_time(self.T0 + 0.50)
+        stats.set_decode_prebuilt_finish_time(self.T0 + 1.25)
+
+        sent = pickle.loads(pickle.dumps(stats))
+        self.assertAlmostEqual(
+            sent.decode_prebuilt_finish_time, self.T0 + 0.10, delta=1e-6
+        )
+        with mock.patch.object(stats, "trace_slice") as trace_slice:
+            stats.set_last_decode_finish_time(self.T0 + 1.30)
+        trace_slice.assert_called_once_with(
+            rts.RequestStage.DECODE_LOOP, self.T0 + 1.25, self.T0 + 1.30, mock.ANY
+        )
 
     def test_prefill_retry_reset_discards_earlier_attempt_waits(self):
         stats = self._stats(disagg_mode=rts.DisaggregationMode.PREFILL)

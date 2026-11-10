@@ -2849,7 +2849,8 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
         # Non-streaming outputs are batched; use the scheduler's first-token time.
         if getattr(state.obj, "stream", False) or recv_obj.time_stats is None:
             return None
-        ts = recv_obj.time_stats[i].prefill_finished_time
+        time_stats = recv_obj.time_stats[i]
+        ts = time_stats.prefill_finished_time or time_stats.decode_prebuilt_finish_time
         if state.time_stats.created_time < ts <= time.perf_counter():
             return ts
         return None

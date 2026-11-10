@@ -479,6 +479,7 @@ class TestRequestTpotGating(CustomTestCase):
         *,
         stream=False,
         prefill_finished_time=0.0,
+        scheduler_time_stats=None,
     ):
         tm = _make_tokenizer_manager(self)
         tm.enable_metrics = True
@@ -493,9 +494,11 @@ class TestRequestTpotGating(CustomTestCase):
         state.obj.stream = stream
         state.time_stats.created_time = time.perf_counter() - 1.0
         tm.rid_to_state[rid] = state
-        sched_stats = SchedulerReqTimeStats(
-            enable_metrics=True, prefill_finished_time=prefill_finished_time
-        )
+        sched_stats = scheduler_time_stats
+        if sched_stats is None:
+            sched_stats = SchedulerReqTimeStats(
+                enable_metrics=True, prefill_finished_time=prefill_finished_time
+            )
         for completion_tokens, finished_reason in batches:
             batch_output = _make_batch_str_output(rid, finished_reason)
             batch_output.completion_tokens = [completion_tokens]
@@ -519,6 +522,30 @@ class TestRequestTpotGating(CustomTestCase):
             self._run([(40, {"type": "stop"})], prefill_finished_time=produced),
             0.0,
         )
+
+    def test_pd_decode_single_batch_non_streaming_finish(self):
+        """A PD decode server never stamps prefill_finished_time, so a
+        non-streaming finish must use its first prebuilt completion, including
+        when a retraction occurs before the first output."""
+        for retracted in (False, True):
+            with self.subTest(retracted=retracted):
+                sched_stats = SchedulerReqTimeStats(
+                    disagg_mode=DisaggregationMode.DECODE,
+                    enable_metrics=True,
+                    metrics_collector=MagicMock(),
+                )
+                sched_stats.set_decode_prebuilt_finish_time(ts=1000.5)
+                if retracted:
+                    sched_stats.set_retract_time(ts=1000.7)
+                    sched_stats.set_decode_prebuilt_finish_time(ts=1000.9)
+
+                with patch("time.perf_counter", return_value=1001.0):
+                    tpot = self._run(
+                        [(40, {"type": "stop"})],
+                        disaggregation_mode=DisaggregationMode.DECODE,
+                        scheduler_time_stats=sched_stats,
+                    )
+                self.assertAlmostEqual(tpot, 0.5 / 39)
 
     def test_multi_batch_records_only_completed_decode(self):
         cases = [
